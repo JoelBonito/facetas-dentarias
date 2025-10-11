@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { supabase } from "@/integrations/supabase/client";
-import { Save, Zap, FileText, Loader2 } from "lucide-react";
+import { Save, Zap, FileText, Loader2, Sparkles, Smile, ArrowLeft } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,6 +17,7 @@ import { hasConfig, getConfig } from "@/utils/storage";
 import { getTimestamp } from "@/utils/formatters";
 import { generateBudgetPDF, generateBudgetNumber } from "@/services/pdfService";
 import { getPatientById } from "@/services/patientService";
+import { useConfig } from "@/contexts/ConfigContext";
 import { usePatientForm } from "@/hooks/usePatientForm";
 import { generateTechnicalReportPDF, generateReportNumber } from "@/services/technicalReportService";
 
@@ -52,7 +53,8 @@ function extractAnalysisData(analiseJSON: any) {
 }
 
 // Tipos simplificados
-type SimulatorState = 'input' | 'processing' | 'completed';
+type SimulatorState = 'selection' | 'input' | 'processing' | 'completed';
+type SimulationType = 'clareamento' | 'facetas';
 
 interface AnalysisResult {
   success: boolean;
@@ -72,9 +74,11 @@ export default function Index() {
   const navigate = useNavigate();
   const location = useLocation();
   const { createPatient } = usePatientForm();
+  const { config } = useConfig(); // Usar o contexto de configuração
 
   // Estados principais
-  const [currentState, setCurrentState] = useState<SimulatorState>('input');
+  const [currentState, setCurrentState] = useState<SimulatorState>('selection');
+  const [simulationType, setSimulationType] = useState<SimulationType | null>(null);
   const [hasApiConfig, setHasApiConfig] = useState(false);
   
   // Paciente
@@ -202,8 +206,8 @@ export default function Index() {
     }
   };
 
-  const buildDynamicBudget = async (analiseJSON: any) => {
-    console.log('🔍 Iniciando montagem de orçamento dinâmico (FASE 3: busca por categoria)...');
+  const buildDynamicBudget = async (analiseJSON: any, simulationType: SimulationType | null) => {
+    console.log(`🔍 Iniciando montagem de orçamento para tipo: ${simulationType}`);
     
     const servicosAtivos = await fetchActiveServices();
     
@@ -219,56 +223,23 @@ export default function Index() {
       };
     }
     
-    // Helper: busca por categoria fixa
     const getServiceByCategory = (categoryName: string) => {
       const service = servicosAtivos.find(
         s => s.category === categoryName && s.active && s.price > 0
       );
       if (!service) {
-        console.warn(`⚠️ Serviço obrigatório '${categoryName}' não encontrado ou inativo/preço zero`);
+        console.warn(`⚠️ Serviço da categoria '${categoryName}' não encontrado ou inativo/preço zero`);
       }
       return service;
     };
     
     const orcamentoItens: any[] = [];
+    const opcionais: any[] = [];
     const analise = analiseJSON?.analise || analiseJSON;
-    
-    // Quantidade de facetas - NOVA ESTRUTURA com fallback
-    const facetaCount = 
-      analise?.decisao_clinica?.quantidade_facetas ||  // ← Nova estrutura
-      analise?.quantidade_facetas ||                   // ← Retrocompatibilidade
-      0;
-    
-    // Procedimentos recomendados - campo mantido
-    const isClareamentoRecomendado = 
-      analise?.procedimentos_recomendados?.some((p: string) => 
-        p.toLowerCase().includes('clareamento')
-      );
-    
-    console.log(`📊 Dados da análise:`);
-    console.log(`   - Quantidade de facetas: ${facetaCount}`);
-    console.log(`   - Conduta: ${analise?.decisao_clinica?.conducta || 'não especificada'}`);
-    console.log(`   - Clareamento recomendado: ${isClareamentoRecomendado}`);
-    
-    console.log(`📊 Análise: ${facetaCount} facetas, clareamento: ${isClareamentoRecomendado}`);
-    
-    // 1. FACETAS (se recomendado)
-    if (facetaCount > 0) {
-      const faceta = getServiceByCategory('Facetas dentárias');
-      if (faceta) {
-        orcamentoItens.push({
-          servico: faceta.name,
-          quantidade: facetaCount,
-          valor_unitario: faceta.price,
-          valor_total: faceta.price * facetaCount,
-          category: faceta.category
-        });
-        console.log(`✓ Facetas: ${facetaCount}x R$ ${faceta.price.toFixed(2)} = R$ ${(faceta.price * facetaCount).toFixed(2)}`);
-      }
-    }
-    
-    // 2. CLAREAMENTO (se recomendado OU obrigatório por regra 2/4 facetas)
-    if (isClareamentoRecomendado || [2, 4].includes(facetaCount)) {
+
+    if (simulationType === 'clareamento') {
+      console.log('Construindo orçamento para CLAREAMENTO...');
+
       const clareamento = getServiceByCategory('Clareamento');
       if (clareamento) {
         orcamentoItens.push({
@@ -280,10 +251,7 @@ export default function Index() {
         });
         console.log(`✓ Clareamento: 1x R$ ${clareamento.price.toFixed(2)}`);
       }
-    }
-    
-    // 3. CONSULTA (sempre que houver qualquer recomendação)
-    if (facetaCount > 0 || isClareamentoRecomendado) {
+
       const consulta = getServiceByCategory('Consulta');
       if (consulta) {
         orcamentoItens.push({
@@ -295,37 +263,77 @@ export default function Index() {
         });
         console.log(`✓ Consulta: 1x R$ ${consulta.price.toFixed(2)}`);
       } else {
-        console.error('❌ CRÍTICO: Consulta obrigatória não encontrada! Orçamento será R$ 0.00');
-        toast.error('Erro: Configure o serviço "Consulta de Planejamento" nas Configurações');
+        console.error('❌ CRÍTICO: Serviço de "Consulta" não encontrado!');
+        toast.error('Erro: Configure o serviço "Consulta" nas Configurações.');
+      }
+
+    } else { // 'facetas' or null (legacy)
+      console.log('Construindo orçamento para FACETAS...');
+      const facetaCount = analise?.decisao_clinica?.quantidade_facetas || analise?.quantidade_facetas || 0;
+      const isClareamentoRecomendado = analise?.procedimentos_recomendados?.some((p: string) => p.toLowerCase().includes('clareamento'));
+
+      if (facetaCount > 0) {
+        const faceta = getServiceByCategory('Facetas dentárias');
+        if (faceta) {
+          orcamentoItens.push({
+            servico: faceta.name,
+            quantidade: facetaCount,
+            valor_unitario: faceta.price,
+            valor_total: faceta.price * facetaCount,
+            category: faceta.category
+          });
+        }
+      }
+
+      if (isClareamentoRecomendado || [2, 4].includes(facetaCount)) {
+        const clareamento = getServiceByCategory('Clareamento');
+        if (clareamento) {
+          orcamentoItens.push({
+            servico: clareamento.name,
+            quantidade: 1,
+            valor_unitario: clareamento.price,
+            valor_total: clareamento.price,
+            category: clareamento.category
+          });
+        }
+      }
+
+      if (facetaCount > 0 || isClareamentoRecomendado) {
+        const consulta = getServiceByCategory('Consulta');
+        if (consulta) {
+          orcamentoItens.push({
+            servico: consulta.name,
+            quantidade: 1,
+            valor_unitario: consulta.price,
+            valor_total: consulta.price,
+            category: consulta.category
+          });
+        } else {
+          console.error('❌ CRÍTICO: Serviço de "Consulta" não encontrado!');
+          toast.error('Erro: Configure o serviço "Consulta" nas Configurações.');
+        }
+      }
+
+      if (analise.gengivoplastia_recomendada || analise.procedimentos_recomendados?.some((p: string) => p.toLowerCase().includes('gengivo'))) {
+        const gengivo = getServiceByCategory('Gengivoplastia');
+        if (gengivo) {
+          opcionais.push({
+            servico: gengivo.name,
+            valor: gengivo.price,
+            justificativa: analise.gengivoplastia_justificativa || 'Recomendado para correção da linha gengival',
+            category: gengivo.category
+          });
+        }
       }
     }
     
-    // 4. GENGIVOPLASTIA (opcional)
-    const opcionais: any[] = [];
-    if (analise.gengivoplastia_recomendada || 
-        analise.procedimentos_recomendados?.some((p: string) => 
-          p.toLowerCase().includes('gengivo')
-        )) {
-      const gengivo = getServiceByCategory('Gengivoplastia');
-      if (gengivo) {
-        opcionais.push({
-          servico: gengivo.name,
-          valor: gengivo.price,
-          justificativa: analise.gengivoplastia_justificativa || 
-                        'Recomendado para correção da linha gengival',
-          category: gengivo.category
-        });
-        console.log(`ℹ️ Gengivoplastia (opcional): R$ ${gengivo.price.toFixed(2)}`);
-      }
-    }
-    
-    // 5. Calcular totais
+    // Calcular totais
     const subtotal = orcamentoItens.reduce((sum, i) => sum + i.valor_total, 0);
     const desconto_percentual = 10;
     const desconto_valor = subtotal * (desconto_percentual / 100);
     const total = subtotal - desconto_valor;
     
-    if (total === 0) {
+    if (total === 0 && orcamentoItens.length > 0) {
       console.error('❌ ORÇAMENTO COM VALOR ZERO! Verifique configuração de serviços');
       toast.error('Erro ao calcular orçamento: verifique os preços nas Configurações');
     }
@@ -364,307 +372,178 @@ export default function Index() {
     setProcessedImage(null);
     setAnalysisData(null);
     setCurrentSimulationId(null);
-    setCurrentState('input');
+    setCurrentState('input'); // Volta para a tela de input, não de seleção
   };
 
-  // FLUXO UNIFICADO: Análise + Geração em uma única função
+  // NOVO FLUXO DE GERAÇÃO EM DUAS ETAPAS
   const handleProcessAndGenerate = async () => {
-    if (!originalImage || !patientName) {
-      toast.error("Preencha o nome do paciente e faça o upload da foto");
+    if (!originalImage || !patientName || !simulationType) {
+      toast.error("Preencha o nome do paciente, a foto e selecione o tipo de simulação.");
       return;
     }
 
     setCurrentState('processing');
     setProcessingTime(0);
-
-    // Variável local para evitar race condition com setState
-    let dynamicBudgetData: any = null;
+    let processedImageUrl: string | null = null;
+    let afterImageBase64: string | null = null;
 
     try {
       const config = await getConfig();
-      if (!config) {
-        throw new Error("Configuração não encontrada");
-      }
-
+      if (!config) throw new Error("Configuração não encontrada");
       const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 
       // ========================================
-      // PASSO 1: ANÁLISE (3-5 segundos)
-      // ========================================
-      setProcessingStep('Analisando foto e gerando documentos...');
-      
-      // ✅ FASE 2: Buscar serviços ativos e enviar à Edge Function
-      const servicosAtivos = await fetchActiveServices();
-      console.log('✓ Serviços ativos carregados:', servicosAtivos.length);
-      
-      const servicosParaEdge = servicosAtivos.map(s => ({
-        name: s.name,
-        category: s.category || 'outros',
-        price: s.price
-      }));
-      
-      console.log('→ Enviando para Edge Function:', servicosParaEdge);
-      
-      const analysisResponse = await fetch(`${supabaseUrl}/functions/v1/process-dental-facets`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${config.apiKey}`
-        },
-        body: JSON.stringify({
-          action: 'analyze',
-          imageBase64: originalImage,
-          servicos_ativos: servicosParaEdge
-        }),
-      });
-
-      if (!analysisResponse.ok) {
-        const errorData = await analysisResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erro na análise: ${analysisResponse.status}`);
-      }
-
-      const analysisResult = await analysisResponse.json();
-      
-      if (!analysisResult.success || !analysisResult.analise_data) {
-        throw new Error("JSON de análise não encontrado na resposta");
-      }
-
-      if (analysisResult.metadata?.truncated) {
-        toast.warning("Atenção: Resposta foi truncada.");
-      }
-
-      // ✅ JSON já vem pronto da edge function
-      const analiseJSON = analysisResult.analise_data;
-      setAnaliseJSON(analiseJSON);
-      
-      console.log('📊 Análise JSON recebida:', analiseJSON);
-      const analise = analiseJSON?.analise || analiseJSON;
-      console.log('  - Tom de pele:', analise?.tom_pele);
-      console.log('  - Cor dos olhos:', analise?.cor_olhos);
-      console.log('  - Pontuação total:', analise?.estado_geral?.pontuacao_total);
-      console.log('  - Conduta:', analise?.decisao_clinica?.conducta);
-      console.log('  - Quantidade de facetas:', analise?.decisao_clinica?.quantidade_facetas);
-      console.log('  - Cor recomendada:', analise?.cor_recomendada);
-
-      // ✅ Gerar texto do relatório a partir do JSON
-      const { generateTextReportFromJSON } = await import('@/services/textReportGenerator');
-      const relatorioTexto = generateTextReportFromJSON(analiseJSON);
-      
-      // ✅ Criar objeto compatível com fluxo atual
-      const analysisDataCompat: AnalysisResult = {
-        success: true,
-        relatorio_tecnico: relatorioTexto,
-        orcamento: '',  // Não mais necessário em texto
-        analise_data: analiseJSON,
-        metadata: analysisResult.metadata
-      };
-      
-      setAnalysisData(analysisDataCompat);
-
-      // ✅ Montar orçamento dinâmico
-      const dynamicBudget = await buildDynamicBudget(analiseJSON);
-      console.log('💰 Orçamento dinâmico:', dynamicBudget);
-      setOrcamentoDinamico(dynamicBudget);
-      dynamicBudgetData = dynamicBudget;
-
-      // Salvar simulação inicial
-      const { data: { user } } = await supabase.auth.getUser();
-      let simulationId: string | null = null;
-
-      if (user) {
-        const timestamp = getTimestamp();
-        
-        const fetchResponse = await fetch(originalImage);
-        const blob = await fetchResponse.blob();
-        const originalFileName = `${user.id}/original-${timestamp}.jpeg`;
-        
-        await supabase.storage
-          .from('original-images')
-          .upload(originalFileName, blob, {
-            contentType: blob.type,
-            upsert: true,
-            cacheControl: '3600',
-          });
-        
-        const { data: { publicUrl: originalUrl } } = supabase.storage
-          .from('original-images')
-          .getPublicUrl(originalFileName);
-
-        const { data: simulation } = await supabase
-          .from('simulations')
-          .insert({
-            user_id: user.id,
-            patient_id: selectedPatientId,
-            patient_name: patientName,
-            patient_phone: patientPhone || null,
-            original_image_url: originalUrl,
-            technical_notes: analysisResult.relatorio_tecnico,
-            budget_data: {
-              orcamento: analysisResult.orcamento,
-              metadata: analysisResult.metadata,
-            },
-            status: 'analyzed',
-          })
-          .select()
-          .single();
-
-        simulationId = simulation.id;
-        setCurrentSimulationId(simulationId);
-      }
-
-      // ========================================
-      // PASSO 2: GERAÇÃO DE IMAGEM (5-8 segundos)
+      // PASSO 1: GERAR IMAGEM SIMULADA (5-8 segundos)
       // ========================================
       setProcessingStep('Gerando simulação visual...');
-
       const imageResponse = await fetch(`${supabaseUrl}/functions/v1/process-dental-facets`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${config.apiKey}`
-        },
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
         body: JSON.stringify({
-          action: 'generate',
+          action: 'generate_image',
           imageBase64: originalImage,
-          reportText: analysisDataCompat.relatorio_tecnico,
-          analiseJSON: analiseJSON, // Dados estruturados da análise para prompt enriquecido
-          config: {
-            temperature: config.temperature,
-            topK: config.topK,
-            topP: config.topP,
-            maxOutputTokens: config.maxTokens,
-          },
+          simulationType: simulationType,
         }),
       });
 
       if (!imageResponse.ok) {
         const errorData = await imageResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || `Erro na geração: ${imageResponse.status}`);
+        throw new Error(errorData.error || `Erro na geração da imagem: ${imageResponse.status}`);
       }
-
+      
       const imageResult = await imageResponse.json();
-      
-      // ✅ FASE 1: Upload e armazenamento em variável local (evita race condition)
-      let processedImageUrl: string | null = null;
-      
-      if (user && simulationId) {
-        const timestamp = getTimestamp();
-        const fetchResponse = await fetch(imageResult.processedImageBase64);
-        const blob = await fetchResponse.blob();
-        const processedFileName = `${user.id}/processed-${timestamp}.jpeg`;
-        
-        await supabase.storage
-          .from('processed-images')
-          .upload(processedFileName, blob, {
-            contentType: blob.type,
-            upsert: true,
-            cacheControl: '3600',
-          });
-        
-        const { data: { publicUrl } } = supabase.storage
-          .from('processed-images')
-          .getPublicUrl(processedFileName);
+      afterImageBase64 = imageResult.processedImageBase64; // Base64 da imagem gerada
+      if (!afterImageBase64) throw new Error("A IA não retornou uma imagem simulada.");
 
-        console.log('✓ Imagem processada salva:', publicUrl);
-        processedImageUrl = publicUrl; // ✅ Armazenar em variável local
-        
-        await supabase
-          .from('simulations')
-          .update({
-            processed_image_url: processedImageUrl,
-            status: 'completed',
-          })
-          .eq('id', simulationId);
-      }
+      setProcessedImage(afterImageBase64); // Atualiza a UI com a imagem simulada
+      toast.success("Simulação visual gerada com sucesso!");
 
       // ========================================
-      // PASSO 3: GERAR PDFs AUTOMATICAMENTE
+      // PASSO 2: GERAR RELATÓRIO E ORÇAMENTO (3-5 segundos)
       // ========================================
-      setProcessingStep('Gerando documentos com imagens...');
-
-      const reportNumber = generateReportNumber();
-      const budgetNumber = generateBudgetNumber();
-
-      // ✅ FASE 1: Converter URLs para Base64 usando variável local (não estado React)
-      console.log('→ Convertendo imagens para Base64...');
-      const beforeImageBase64 = originalImage ? await urlToBase64(originalImage) : '';
-      const afterImageBase64 = processedImageUrl ? await urlToBase64(processedImageUrl) : '';
-      
-      console.log('✓ Conversão concluída:', {
-        before: beforeImageBase64 ? 'OK' : 'VAZIO',
-        after: afterImageBase64 ? 'OK' : 'VAZIO'
+      setProcessingStep('Gerando relatório e orçamento...');
+      const documentsResponse = await fetch(`${supabaseUrl}/functions/v1/process-dental-facets`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${config.apiKey}` },
+          body: JSON.stringify({
+              action: 'generate_documents',
+              beforeImageBase64: originalImage,
+              afterImageBase64: afterImageBase64,
+              simulationType: simulationType,
+          }),
       });
 
-      // Gerar Relatório Técnico com texto narrativo
-      console.log('→ Gerando Relatório Técnico PDF...');
+      if (!documentsResponse.ok) {
+          const errorData = await documentsResponse.json().catch(() => ({}));
+          throw new Error(errorData.error || `Erro na geração de documentos: ${documentsResponse.status}`);
+      }
+
+      const documentsResult = await documentsResponse.json();
+      if (!documentsResult.success || !documentsResult.analysisData) {
+          throw new Error("A IA não retornou os dados da análise.");
+      }
+
+      const analysisResult = documentsResult.analysisData;
+      const analiseJSON = analysisResult.analise;
+      setAnaliseJSON(analiseJSON);
+      
+      const relatorioTexto = "Relatório técnico gerado via JSON."; // Placeholder, o PDF usará o JSON
+      const analysisDataCompat: AnalysisResult = {
+        success: true,
+        relatorio_tecnico: relatorioTexto,
+        orcamento: '',
+        analise_data: analiseJSON,
+      };
+      setAnalysisData(analysisDataCompat);
+
+      const dynamicBudget = await buildDynamicBudget(analiseJSON, simulationType);
+      setOrcamentoDinamico(dynamicBudget);
+
+      // ========================================
+      // PASSO 3: SALVAR TUDO E GERAR PDFs
+      // ========================================
+      setProcessingStep('Finalizando e gerando PDFs...');
+      const { data: { user } } = await supabase.auth.getUser();
+      let simulationId: string | null = null;
+
+      if (user) {
+          const timestamp = getTimestamp();
+
+          // Salvar imagem original
+          const originalBlob = await (await fetch(originalImage)).blob();
+          const originalFileName = `${user.id}/original-${timestamp}.jpeg`;
+          await supabase.storage.from('original-images').upload(originalFileName, originalBlob, { contentType: 'image/jpeg', upsert: true });
+          const { data: { publicUrl: originalUrl } } = supabase.storage.from('original-images').getPublicUrl(originalFileName);
+
+          // Salvar imagem processada
+          const processedBlob = await (await fetch(afterImageBase64)).blob();
+          const processedFileName = `${user.id}/processed-${timestamp}.jpeg`;
+          await supabase.storage.from('processed-images').upload(processedFileName, processedBlob, { contentType: 'image/jpeg', upsert: true });
+          const { data: { publicUrl: processedUrl } } = supabase.storage.from('processed-images').getPublicUrl(processedFileName);
+          processedImageUrl = processedUrl;
+
+          const { data: simulation } = await supabase.from('simulations').insert({
+              user_id: user.id,
+              patient_id: selectedPatientId,
+              patient_name: patientName,
+              patient_phone: patientPhone || null,
+              original_image_url: originalUrl,
+              processed_image_url: processedImageUrl,
+              technical_notes: JSON.stringify(analiseJSON.relatorio_tecnico),
+              budget_data: analiseJSON.orcamento,
+              status: 'completed',
+              simulation_type: simulationType,
+          }).select().single();
+          simulationId = simulation.id;
+          setCurrentSimulationId(simulationId);
+      }
+      
+      // Gerar PDFs
       const reportPdf = await generateTechnicalReportPDF({
-        reportNumber,
-        patientName,
-        patientPhone: patientPhone || undefined,
-        date: new Date(),
-        teethCount: analiseJSON?.analise?.decisao_clinica?.quantidade_facetas ||
-                    analiseJSON?.recomendacao_tratamento?.quantidade_facetas || 0,
-        reportContent: analysisResult.relatorio_tecnico || analysisDataCompat.relatorio_tecnico || 'Análise não disponível',
-        simulationId: simulationId || currentSimulationId || '',
-        beforeImage: beforeImageBase64,
-        afterImage: afterImageBase64
-      });
-      
-      console.log('✓ Relatório Técnico PDF gerado:', reportPdf);
-
-      // Gerar Orçamento com dados dinâmicos
-      console.log('→ Gerando Orçamento PDF...');
-      console.log('→ Usando orçamento dinâmico:', dynamicBudgetData);
-      
-      let budgetPdf: string | null = null;
-      
-      if (dynamicBudgetData && dynamicBudgetData.itens?.length > 0) {
-        budgetPdf = await generateBudgetPDF({
-          budgetNumber,
+          reportNumber: generateReportNumber(),
           patientName,
-          patientPhone: patientPhone || undefined,
           date: new Date(),
-          itens: dynamicBudgetData.itens,
-          opcionais: dynamicBudgetData.opcionais || [],
-          subtotal: dynamicBudgetData.subtotal,
-          desconto_percentual: dynamicBudgetData.desconto_percentual,
-          desconto_valor: dynamicBudgetData.desconto_valor,
-          total: dynamicBudgetData.total,
-          beforeImage: beforeImageBase64,
+          reportContent: analiseJSON.relatorio_tecnico, // Passando o JSON completo
+          simulationId: simulationId || '',
+          beforeImage: originalImage,
           afterImage: afterImageBase64
-        });
-        console.log('✓ Orçamento PDF gerado:', budgetPdf);
-      } else {
-        console.warn('⚠️ Orçamento sem itens, PDF não será gerado');
-        toast.warning('Orçamento não pôde ser gerado. Verifique os serviços configurados.');
-      }
-      
-      // ✅ FASE 1: Atualizar estado APÓS gerar PDFs (não antes)
-      setProcessedImage(processedImageUrl);
+      });
 
-      // Atualizar simulação com os PDFs
+      let budgetPdf: string | null = null;
+      if (dynamicBudget && dynamicBudget.itens?.length > 0) {
+        budgetPdf = await generateBudgetPDF({
+            budgetNumber: generateBudgetNumber(),
+            patientName,
+            date: new Date(),
+            itens: dynamicBudget.itens,
+            opcionais: dynamicBudget.opcionais || [],
+            subtotal: dynamicBudget.subtotal,
+            desconto_percentual: dynamicBudget.desconto_percentual,
+            desconto_valor: dynamicBudget.desconto_valor,
+            total: dynamicBudget.total,
+            beforeImage: originalImage,
+            afterImage: afterImageBase64
+        });
+      }
+
+      // Atualizar simulação com URLs dos PDFs
       if (simulationId) {
-        await supabase
-          .from('simulations')
-          .update({
-            technical_report_url: reportPdf,
-            budget_pdf_url: budgetPdf || null
-          })
-          .eq('id', simulationId);
+          await supabase.from('simulations').update({
+              technical_report_url: reportPdf,
+              budget_pdf_url: budgetPdf,
+          }).eq('id', simulationId);
       }
 
       setReportPdfUrl(reportPdf);
-      if (budgetPdf) {
-        setBudgetPdfUrl(budgetPdf);
-      }
+      setBudgetPdfUrl(budgetPdf);
       setCurrentState('completed');
-      toast.success("Simulação concluída com sucesso!");
-      
+      toast.success("Simulação, relatório e orçamento concluídos!");
+
     } catch (err) {
-      console.error("Erro ao processar:", err);
-      const errorMessage = err instanceof Error ? err.message : "Erro desconhecido";
+      console.error("Erro no fluxo de geração:", err);
+      const errorMessage = err instanceof Error ? err.message : "Ocorreu um erro desconhecido";
       toast.error(errorMessage);
-      setCurrentState('input');
+      setCurrentState('input'); // Volta para a tela de input em caso de erro
     }
   };
 
@@ -761,7 +640,8 @@ export default function Index() {
         before_image: originalImage,
         after_image: processedImage,
         status: 'new',
-        source: 'simulator'
+        source: 'simulator',
+        simulation_type: simulationType, // Adicionado
       });
 
       toast.success("Simulação salva!");
@@ -781,7 +661,8 @@ export default function Index() {
     setCurrentSimulationId(null);
     setProcessingTime(0);
     setProcessingStep('');
-    setCurrentState('input');
+    setCurrentState('selection'); // Volta para a tela de SELEÇÃO
+    setSimulationType(null); // Reseta o tipo de simulação
     setBudgetPdfUrl(null);
     setReportPdfUrl(null);
     setSelectedPatientId(null);
@@ -795,6 +676,11 @@ export default function Index() {
     return null;
   }
 
+  const handleSelectSimulationType = (type: SimulationType) => {
+    setSimulationType(type);
+    setCurrentState('input');
+  };
+
   return (
     <Layout>
       <div className="max-w-6xl mx-auto space-y-8">
@@ -807,12 +693,51 @@ export default function Index() {
           </p>
         </div>
 
-        {/* TELA 1: INPUT (Dados + Upload) */}
-        {currentState === 'input' && (
+        {/* TELA 0: SELEÇÃO DO TIPO DE SIMULAÇÃO */}
+        {currentState === 'selection' && (
           <Card>
             <CardHeader>
-              <CardTitle>Nova Simulação</CardTitle>
-              <CardDescription>Preencha os dados e faça o upload da foto</CardDescription>
+              <CardTitle>Escolha o tipo de simulação</CardTitle>
+              <CardDescription>Selecione o procedimento que deseja simular.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-6 p-6">
+              {config?.whiteningSimulatorEnabled && (
+                <Button
+                  variant="outline"
+                  className="h-auto py-6 flex flex-col items-center justify-center space-y-3"
+                  onClick={() => handleSelectSimulationType('clareamento')}
+                >
+                  <Sparkles className="h-10 w-10 text-primary" />
+                  <span className="text-lg font-semibold">Clareamento Dentário</span>
+                  <p className="text-sm text-muted-foreground text-center">Simule a melhoria na cor dos dentes, mantendo a forma original.</p>
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                className={`h-auto py-6 flex flex-col items-center justify-center space-y-3 ${!config?.whiteningSimulatorEnabled ? 'col-span-2' : ''}`}
+                onClick={() => handleSelectSimulationType('facetas')}
+              >
+                <Smile className="h-10 w-10 text-primary" />
+                <span className="text-lg font-semibold">Facetas Dentárias</span>
+                <p className="text-sm text-muted-foreground text-center">Simule a correção de cor, forma e alinhamento com facetas.</p>
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* TELA 1: INPUT (Dados + Upload) */}
+        {currentState === 'input' && simulationType && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-4">
+                 <Button variant="ghost" size="icon" onClick={() => setCurrentState('selection')}>
+                    <ArrowLeft className="h-5 w-5" />
+                  </Button>
+                <div>
+                  <CardTitle>Nova Simulação: {simulationType === 'clareamento' ? 'Clareamento' : 'Facetas'}</CardTitle>
+                  <CardDescription>Preencha os dados e faça o upload da foto</CardDescription>
+                </div>
+              </div>
             </CardHeader>
             <CardContent className="space-y-6">
               {/* Seletor de Paciente */}
@@ -889,7 +814,7 @@ export default function Index() {
                     {(processingTime / 1000).toFixed(1)}s
                   </p>
                   <div className="w-64 mx-auto bg-muted rounded-full h-2">
-                    <div 
+                    <div
                       className="bg-primary h-2 rounded-full transition-all duration-300"
                       style={{ width: `${Math.min((processingTime / 15000) * 100, 100)}%` }}
                     />
@@ -905,7 +830,7 @@ export default function Index() {
           <div className="space-y-6">
             <Card>
               <CardHeader>
-                <CardTitle>Simulação Concluída</CardTitle>
+                <CardTitle>Simulação Concluída: {simulationType === 'clareamento' ? 'Clareamento' : 'Facetas'}</CardTitle>
                 <CardDescription>Paciente: {patientName}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -919,7 +844,7 @@ export default function Index() {
 
                 {/* Botões de Documentos */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Button 
+                  <Button
                     variant="outline"
                     onClick={handleViewTechnicalReport}
                     disabled={!reportPdfUrl}
@@ -928,7 +853,7 @@ export default function Index() {
                     <FileText className="h-4 w-4 mr-2" />
                     Ver Relatório Técnico
                   </Button>
-                  <Button 
+                  <Button
                     variant="outline"
                     onClick={handleViewBudget}
                     disabled={!budgetPdfUrl}
@@ -942,14 +867,21 @@ export default function Index() {
             </Card>
 
             {/* Botão Salvar */}
-            <div className="flex justify-end">
-              <Button 
+            <div className="flex justify-end gap-4">
+               <Button
+                variant="outline"
+                onClick={handleNewSimulation}
+                size="lg"
+              >
+                Nova Simulação
+              </Button>
+              <Button
                 onClick={handleSaveSimulation}
                 disabled={savingSimulation}
                 size="lg"
               >
                 <Save className="h-4 w-4 mr-2" />
-                {savingSimulation ? 'Salvando...' : 'Salvar Simulação'}
+                {savingSimulation ? 'Salvando...' : 'Salvar e Adicionar ao CRM'}
               </Button>
             </div>
           </div>

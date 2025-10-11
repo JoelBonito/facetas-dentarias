@@ -1,6 +1,6 @@
 import { Lead } from '@/services/leadService';
 import { Badge } from '@/components/ui/badge';
-import { Phone, Mail, Tag, Clock } from 'lucide-react';
+import { Phone, Mail, Tag, Clock, Sparkles, Smile } from 'lucide-react';
 import { formatCurrency } from '@/utils/formatters';
 import { formatDistanceToNow } from 'date-fns';
 import { ptBR } from 'date-fns/locale';
@@ -48,6 +48,12 @@ export function LeadCard({ lead, onClick }: LeadCardProps) {
           <h3 className="font-semibold text-foreground group-hover:text-primary transition-colors">
             {lead.name}
           </h3>
+          {lead.simulation_type && (
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground mt-1">
+              {lead.simulation_type === 'clareamento' ? <Sparkles className="h-3 w-3 text-blue-500" /> : <Smile className="h-3 w-3 text-pink-500" />}
+              <span>{lead.simulation_type === 'clareamento' ? 'Clareamento' : 'Facetas'}</span>
+            </div>
+          )}
         </div>
 
         {/* Contato */}

@@ -20,10 +20,14 @@ import trusmileLogo from "@/assets/trusmile-logo.png";
 import logoDenteAI from "@/assets/logo-dente-ai.png";
 import { useConfig } from "@/contexts/ConfigContext";
 
+import { FileHeart } from 'lucide-react';
+
 const menuItems = [
   { title: "Painel", url: "/dashboard", icon: BarChart3 },
   { title: "Simulador", url: "/", icon: Image, highlight: true },
   { title: "CRM", url: "/crm", icon: Kanban, highlight: true },
+  { title: "Orçamentos", url: "/budgets", icon: FileText },
+  { title: "Serviços", url: "/services", icon: FileHeart },
   { title: "Pacientes", url: "/pacientes", icon: Users },
 ];
 

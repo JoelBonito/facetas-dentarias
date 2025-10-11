@@ -5,6 +5,7 @@ export interface Lead {
   created_at: string;
   updated_at: string;
   patient_id?: string;
+  simulation_type?: 'clareamento' | 'facetas';
   name: string;
   phone: string;
   email?: string;
